@@ -25,8 +25,11 @@ import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
+import { CanvasDirectorConsole, type DirectorConsoleRequest } from "@/components/canvas/canvas-director-console";
+import { CanvasDirectorWorkbench } from "@/components/canvas/canvas-director-workbench";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
+import { CanvasNodeLightingDialog } from "@/components/canvas/canvas-node-lighting-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
@@ -46,9 +49,11 @@ import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
-import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { buildCanvasResourceReferences, buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, resolveCanvasReferenceImages, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
+import { appendCameraPrompt, buildLightingLabel, buildLightingPrompt } from "@/lib/canvas/canvas-cinematography";
+import { buildDirectorPlanningPrompt, buildDirectorShotPrompt, createDefaultDirectorScene, materializeDirectorScene, parseDirectorScene } from "@/lib/canvas/canvas-director";
 import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
@@ -80,10 +85,12 @@ import {
     type CanvasAssistantImage,
     type CanvasAssistantSession,
     type CanvasConnection,
+    type CanvasDirectorScene,
     type CanvasNodeData,
     type CanvasNodeImage,
     type CanvasNodeText,
     type CanvasNodeMetadata,
+    type CanvasLightingParams,
     type CanvasNodeTypeId,
     type ConnectionHandle,
     type ContextMenuState,
@@ -250,6 +257,7 @@ function InfiniteCanvasPage() {
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
+    const [lightingNodeId, setLightingNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [previewImageId, setPreviewImageId] = useState<string | null>(null);
     const [titleEditing, setTitleEditing] = useState(false);
@@ -260,6 +268,10 @@ function InfiniteCanvasPage() {
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
     const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
+    const [directorOpen, setDirectorOpen] = useState(false);
+    const [directorPlannerOpen, setDirectorPlannerOpen] = useState(false);
+    const [directorSceneId, setDirectorSceneId] = useState<string | null>(null);
+    const [directorShotId, setDirectorShotId] = useState<string | null>(null);
 
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
@@ -309,7 +321,8 @@ function InfiniteCanvasPage() {
         async (nodeId: string, config: Parameters<typeof buildGenerationConfig>[0], prompt: string, images: Parameters<typeof createVideoGenerationTask>[2], signal: AbortSignal, extra: CanvasNodeData["metadata"] = {}, videos: ReferenceVideo[] = [], audios: ReferenceAudio[] = []) => {
             const task = await createVideoGenerationTask(config, prompt, images, { signal, videos, audios });
             if (task.provider !== "plugin") {
-                setNodes((prev) => prev.map((item) => (item.id === nodeId ? { ...item, metadata: { ...item.metadata, videoTaskId: task.id, videoTaskProvider: task.provider === "gemini" ? "gemini" : "openai", model: config.model } } : item)));
+                const taskProvider = task.provider;
+                setNodes((prev) => prev.map((item) => (item.id === nodeId ? { ...item, metadata: { ...item.metadata, videoTaskId: task.id, videoTaskProvider: taskProvider, model: config.model } } : item)));
             }
             const video = await storeGeneratedVideo(await waitForVideoGenerationTask(config, task, { signal }));
             setNodes((prev) => prev.map((item) => (item.id === nodeId ? applyGeneratedVideo(item, video, { prompt, model: config.model, ...extra }) : item)));
@@ -336,7 +349,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(node.id);
                 setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item)));
                 controller = startGenerationRequest(node.id, node.id, node.id);
-                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, { id: taskId, provider: node.metadata?.videoTaskProvider === "gemini" ? "gemini" : "openai", model: generationConfig.model }, { signal: controller.signal }));
+                const video = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, { id: taskId, provider: node.metadata?.videoTaskProvider || "openai", model: generationConfig.model }, { signal: controller.signal }));
                 setNodes((prev) =>
                     prev.map((item) =>
                         item.id === node.id
@@ -727,11 +740,24 @@ function InfiniteCanvasPage() {
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
     const superResolveNode = superResolveNodeId ? nodeById.get(superResolveNodeId) || null : null;
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
+    const lightingNode = lightingNodeId ? nodeById.get(lightingNodeId) || null : null;
     const contextMenuNode = contextMenu?.type === "node" ? nodeById.get(contextMenu.nodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const previewContent = previewImageId ? previewNode?.metadata?.images?.find((image) => image.id === previewImageId)?.content : previewNode?.metadata?.content;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
     const selectedNodes = useMemo(() => nodes.filter((node) => selectedNodeIds.has(node.id)), [nodes, selectedNodeIds]);
+    const directorSourceNodes = useMemo(() => {
+        const selectedWithGroupChildren = selectedNodes.flatMap((node) => (node.type === CanvasNodeType.Group ? getGroupResourceNodes(node.id, nodes) : [node]));
+        const selectedResourceIds = new Set(buildCanvasResourceReferences(selectedWithGroupChildren).map((reference) => reference.nodeId));
+        if (selectedResourceIds.size) return selectedWithGroupChildren.filter((node) => selectedResourceIds.has(node.id));
+        const allResourceIds = new Set(buildCanvasResourceReferences(nodes).map((reference) => reference.nodeId));
+        return nodes.filter((node) => allResourceIds.has(node.id));
+    }, [nodes, selectedNodes]);
+    const activeDirectorScene = useMemo(() => {
+        const scenes = currentProject?.directorScenes || [];
+        return scenes.find((scene) => scene.id === directorSceneId) || scenes[0] || null;
+    }, [currentProject?.directorScenes, directorSceneId]);
+    const activeDirectorShot = useMemo(() => activeDirectorScene?.shots.find((shot) => shot.id === directorShotId) || activeDirectorScene?.shots[0] || null, [activeDirectorScene, directorShotId]);
     const canGroupSelection = canGroupSelectedNodes(selectedNodeIds, nodes);
     const canUngroupSelection = canUngroupSelectedNodes(selectedNodeIds, nodes);
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
@@ -875,6 +901,7 @@ function InfiniteCanvasPage() {
             setCropNodeId((current) => (current && allIds.has(current) ? null : current));
             setMaskEditNodeId((current) => (current && allIds.has(current) ? null : current));
             setAngleNodeId((current) => (current && allIds.has(current) ? null : current));
+            setLightingNodeId((current) => (current && allIds.has(current) ? null : current));
             setPreviewNodeId((current) => (current && allIds.has(current) ? null : current));
             setRunningNodeId((current) => (current && allIds.has(current) ? null : current));
             setReferencePickerNodeId((current) => (current && allIds.has(current) ? null : current));
@@ -975,6 +1002,7 @@ function InfiniteCanvasPage() {
         setCropNodeId(null);
         setMaskEditNodeId(null);
         setAngleNodeId(null);
+        setLightingNodeId(null);
         setPreviewNodeId(null);
         setRunningNodeId(null);
         deselectCanvas();
@@ -1638,6 +1666,8 @@ function InfiniteCanvasPage() {
                 setInfoNodeId(null);
                 setCropNodeId(null);
                 setMaskEditNodeId(null);
+                setAngleNodeId(null);
+                setLightingNodeId(null);
                 setPendingConnectionCreate(null);
             }
         };
@@ -2119,6 +2149,56 @@ function InfiniteCanvasPage() {
         [effectiveConfig, finishGenerationRequest, openConfigDialog, startGenerationRequest, t],
     );
 
+    const generateLightingNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasLightingParams) => {
+            if (!node.metadata?.content) return;
+            const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                openConfigDialog(true);
+                return;
+            }
+            const childId = nanoid();
+            const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+            const title = buildLightingLabel(params);
+            const prompt = buildLightingPrompt(params);
+            const reference = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey };
+            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [reference]);
+            setLightingNodeId(null);
+            setRunningNodeId(childId);
+            setNodes((prev) => [
+                ...prev,
+                {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title,
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: imageConfig.width,
+                    height: imageConfig.height,
+                    metadata: { prompt, lighting: params, status: NODE_STATUS_LOADING, ...generationMetadata },
+                },
+            ]);
+            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+            const controller = startGenerationRequest(childId, node.id, childId);
+            try {
+                const image = await requestEdit(generationConfig, prompt, [reference], { signal: controller.signal }).then((items) => items[0]);
+                const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
+                const size = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
+                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, lighting: params, ...generationMetadata } } : item)));
+            } catch (error) {
+                if (isGenerationCanceled(error)) return;
+                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
+                message.error(errorDetails);
+                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
+            } finally {
+                finishGenerationRequest(childId, controller);
+                setRunningNodeId(null);
+            }
+        },
+        [effectiveConfig, finishGenerationRequest, message, openConfigDialog, startGenerationRequest, t],
+    );
+
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, fontSize } } : node)));
     }, []);
@@ -2321,7 +2401,7 @@ function InfiniteCanvasPage() {
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
                 try {
-                    const fullPrompt = (builtinPanel.promptPrefix || "") + scene;
+                    const fullPrompt = appendCameraPrompt((builtinPanel.promptPrefix || "") + scene, sourceNode.metadata?.cameraControl);
                     const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, fullPrompt));
                     const refs = context.referenceImages;
                     const image = refs.length
@@ -2348,8 +2428,9 @@ function InfiniteCanvasPage() {
             const runController = startGenerationRequest(nodeId, nodeId, nodeId);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
+            const requestPrompt = mode === "image" || mode === "video" ? appendCameraPrompt(prompt, sourceNode?.metadata?.cameraControl, mode) : prompt;
             const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : requestPrompt),
             );
             const effectivePrompt = generationContext.prompt.trim();
             if (runController.signal.aborted) {
@@ -2397,6 +2478,7 @@ function InfiniteCanvasPage() {
                         height: isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height,
                         metadata: {
                             prompt: effectivePrompt,
+                            cameraControl: sourceNode?.metadata?.cameraControl,
                             status: NODE_STATUS_LOADING,
                             images: imageIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" })),
                             ...generationMetadata,
@@ -2526,6 +2608,7 @@ function InfiniteCanvasPage() {
                         height: isEmptyVideoNode ? sourceNode.height : spec.height,
                         metadata: {
                             prompt: effectivePrompt,
+                            cameraControl: sourceNode?.metadata?.cameraControl,
                             status: NODE_STATUS_LOADING,
                             model: generationConfig.model,
                             size: generationConfig.size,
@@ -2737,6 +2820,220 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
+
+    const saveDirectorScene = useCallback(
+        (scene: CanvasDirectorScene) => {
+            const latestProject = useCanvasStore.getState().projects.find((project) => project.id === projectId);
+            const previous = latestProject?.directorScenes || [];
+            updateProject(projectId, { directorScenes: [scene, ...previous.filter((item) => item.id !== scene.id)].slice(0, 30) });
+        },
+        [projectId, updateProject],
+    );
+
+    const openDirectorWorkbench = useCallback(() => {
+        const latestProject = useCanvasStore.getState().projects.find((project) => project.id === projectId);
+        let scene = latestProject?.directorScenes?.[0];
+        if (!scene) {
+            scene = createDefaultDirectorScene(directorSourceNodes, effectiveConfig.textModel);
+            saveDirectorScene(scene);
+        }
+        setDirectorSceneId(scene.id);
+        setDirectorShotId(scene.shots[0]?.id || null);
+        setDirectorOpen(true);
+    }, [directorSourceNodes, effectiveConfig.textModel, projectId, saveDirectorScene]);
+
+    const updateDirectorShot = useCallback(
+        (shot: CanvasDirectorScene["shots"][number]) => {
+            const latestProject = useCanvasStore.getState().projects.find((project) => project.id === projectId);
+            const scene = latestProject?.directorScenes?.find((item) => item.id === (directorSceneId || activeDirectorScene?.id));
+            if (!scene) return;
+            const nextScene = { ...scene, shots: scene.shots.map((item) => (item.id === shot.id ? shot : item)), updatedAt: new Date().toISOString() };
+            saveDirectorScene(nextScene);
+            setDirectorSceneId(nextScene.id);
+            setDirectorShotId(shot.id);
+        },
+        [activeDirectorScene?.id, directorSceneId, projectId, saveDirectorScene],
+    );
+
+    const applyDirectorShot = useCallback(
+        async (shot: CanvasDirectorScene["shots"][number], beautyDataUrl: string) => {
+            const latestProject = useCanvasStore.getState().projects.find((project) => project.id === projectId);
+            const scene = latestProject?.directorScenes?.find((item) => item.id === (directorSceneId || activeDirectorScene?.id));
+            if (!scene) return;
+            const uploaded = await uploadImage(beautyDataUrl);
+            const previewId = nanoid();
+            const center = getCanvasCenter();
+            const previewSize = fitNodeSize(uploaded.width, uploaded.height, 360, 320);
+            const previewNode: CanvasNodeData = {
+                id: previewId,
+                type: CanvasNodeType.Image,
+                title: `${shot.title} · Beauty 预演`,
+                position: { x: center.x - previewSize.width / 2, y: center.y - previewSize.height / 2 },
+                width: previewSize.width,
+                height: previewSize.height,
+                metadata: { ...imageMetadata(uploaded), workflowKind: "director-preview", directorSceneId: scene.id, directorShotId: shot.id, shotIndex: shot.index },
+            };
+            const updatedShot = { ...shot, previewNodeId: previewId, referenceNodeIds: [...new Set([...shot.referenceNodeIds, previewId])] };
+            let nextNodes = [...nodesRef.current, previewNode];
+            let nextConnections = [...connectionsRef.current];
+            let savedShot = updatedShot;
+
+            if (!shot.promptNodeId || !shot.configNodeId || !nodesRef.current.some((node) => node.id === shot.configNodeId)) {
+                const result = materializeDirectorScene({ ...scene, shots: [updatedShot] }, effectiveConfig, { x: center.x + 260, y: center.y - 100 });
+                savedShot = result.scene.shots[0] || updatedShot;
+                const allNodeIds = new Set([...nextNodes, ...result.nodes].map((node) => node.id));
+                nextNodes = [...nextNodes, ...result.nodes];
+                nextConnections = [...nextConnections, ...result.connections.filter((connection) => allNodeIds.has(connection.fromNodeId) && allNodeIds.has(connection.toNodeId))];
+            } else {
+                const prompt = buildDirectorShotPrompt(updatedShot, scene);
+                nextNodes = nextNodes.map((node) =>
+                    node.id === shot.promptNodeId
+                        ? { ...node, title: `S${String(shot.index).padStart(2, "0")} · ${shot.title}`, metadata: { ...node.metadata, content: prompt, prompt } }
+                        : node.id === shot.configNodeId
+                          ? { ...node, metadata: { ...node.metadata, generationMode: shot.mode, size: scene.aspectRatio, seconds: String(Math.max(4, shot.durationSeconds)), cameraControl: shot.cameraControl } }
+                          : node,
+                );
+                if (!nextConnections.some((connection) => connection.fromNodeId === previewId && connection.toNodeId === shot.configNodeId)) nextConnections.push({ id: nanoid(), fromNodeId: previewId, toNodeId: shot.configNodeId });
+            }
+
+            const nextScene = { ...scene, shots: scene.shots.map((item) => (item.id === shot.id ? savedShot : item)), updatedAt: new Date().toISOString() };
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            setSelectedNodeIds(new Set([previewId, ...(savedShot.promptNodeId ? [savedShot.promptNodeId] : []), ...(savedShot.configNodeId ? [savedShot.configNodeId] : [])]));
+            saveDirectorScene(nextScene);
+            setDirectorShotId(savedShot.id);
+        },
+        [activeDirectorScene?.id, directorSceneId, effectiveConfig, getCanvasCenter, projectId, saveDirectorScene],
+    );
+
+    const exportDirectorWhitebox = useCallback(
+        async (shot: CanvasDirectorScene["shots"][number], videoBlob: Blob) => {
+            const latestProject = useCanvasStore.getState().projects.find((project) => project.id === projectId);
+            const scene = latestProject?.directorScenes?.find((item) => item.id === (directorSceneId || activeDirectorScene?.id));
+            if (!scene) return;
+            const uploaded = await uploadMediaFile(new File([videoBlob], `${shot.title}-whitebox.webm`, { type: "video/webm" }), "video");
+            const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+            const center = getCanvasCenter();
+            const videoId = nanoid();
+            const videoNode: CanvasNodeData = {
+                id: videoId,
+                type: CanvasNodeType.Video,
+                title: `${shot.title} · 白模预演`,
+                position: { x: center.x - spec.width / 2, y: center.y + 220 },
+                width: spec.width,
+                height: spec.height,
+                metadata: { ...videoMetadata(uploaded), workflowKind: "director-preview", directorSceneId: scene.id, directorShotId: shot.id, shotIndex: shot.index },
+            };
+            const previousPreviewIds = new Set(
+                nodesRef.current
+                    .filter((node) => node.metadata.workflowKind === "director-preview" && node.metadata.directorSceneId === scene.id && node.metadata.directorShotId === shot.id)
+                    .map((node) => node.id),
+            );
+            const updatedShot = { ...shot, referenceNodeIds: [...new Set([...shot.referenceNodeIds.filter((id) => !previousPreviewIds.has(id)), videoId])] };
+            let savedShot = updatedShot;
+            let nextNodes = [...nodesRef.current, videoNode];
+            let nextConnections = connectionsRef.current.filter((connection) => !(previousPreviewIds.has(connection.fromNodeId) && connection.toNodeId === shot.configNodeId));
+            const hasConfigNode = Boolean(shot.promptNodeId && shot.configNodeId && nodesRef.current.some((node) => node.id === shot.configNodeId));
+            if (!hasConfigNode) {
+                const result = materializeDirectorScene({ ...scene, shots: [updatedShot] }, effectiveConfig, { x: center.x + 260, y: center.y + 220 });
+                savedShot = result.scene.shots[0] || updatedShot;
+                const allNodeIds = new Set([...nextNodes, ...result.nodes].map((node) => node.id));
+                nextNodes = [...nextNodes, ...result.nodes];
+                nextConnections = [...nextConnections, ...result.connections.filter((connection) => allNodeIds.has(connection.fromNodeId) && allNodeIds.has(connection.toNodeId))];
+            } else {
+                const prompt = buildDirectorShotPrompt(updatedShot, scene);
+                nextNodes = nextNodes.map((node) =>
+                    node.id === shot.promptNodeId
+                        ? { ...node, metadata: { ...node.metadata, content: prompt, prompt } }
+                        : node.id === shot.configNodeId
+                          ? { ...node, metadata: { ...node.metadata, generationMode: shot.mode, size: scene.aspectRatio, seconds: String(Math.max(4, shot.durationSeconds)), cameraControl: shot.cameraControl } }
+                          : node,
+                );
+                if (!nextConnections.some((connection) => connection.fromNodeId === videoId && connection.toNodeId === shot.configNodeId)) nextConnections.push({ id: nanoid(), fromNodeId: videoId, toNodeId: shot.configNodeId! });
+            }
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            setSelectedNodeIds(new Set([videoId, ...(savedShot.promptNodeId ? [savedShot.promptNodeId] : []), ...(savedShot.configNodeId ? [savedShot.configNodeId] : [])]));
+            saveDirectorScene({ ...scene, shots: scene.shots.map((item) => (item.id === shot.id ? savedShot : item)), updatedAt: new Date().toISOString() });
+            setDirectorShotId(savedShot.id);
+        },
+        [activeDirectorScene?.id, directorSceneId, effectiveConfig, getCanvasCenter, projectId, saveDirectorScene],
+    );
+
+    const planDirectorScene = useCallback(
+        async (request: DirectorConsoleRequest) => {
+            const planningConfig = { ...effectiveConfig, model: request.model, systemPrompt: "" };
+            if (!isAiConfigReady(planningConfig, request.model)) {
+                openConfigDialog(true);
+                throw new Error(t("workbench.configFirst"));
+            }
+
+            const references = buildCanvasResourceReferences(request.sourceNodes).filter((reference) => reference.kind === "image").slice(0, 8);
+            const prompt = [
+                buildDirectorPlanningPrompt(request),
+                references.length ? `随消息附带的图片顺序：\n${references.map((reference, index) => `- 图片${index + 1}=nodeId ${reference.nodeId}（${reference.title}）`).join("\n")}` : "",
+            ]
+                .filter(Boolean)
+                .join("\n\n");
+            const images = references.length ? await resolveCanvasReferenceImages(references, nodesRef.current) : [];
+            const messages = images.length
+                ? [
+                      {
+                          role: "user" as const,
+                          content: [{ type: "text" as const, text: prompt }, ...images.map((image) => ({ type: "image_url" as const, image_url: { url: image.dataUrl } }))],
+                      },
+                  ]
+                : [{ role: "user" as const, content: prompt }];
+            const raw = await requestImageQuestion(planningConfig, messages, () => undefined);
+            return parseDirectorScene(raw, request, request.model);
+        },
+        [effectiveConfig, isAiConfigReady, openConfigDialog, t],
+    );
+
+    const materializeDirectorPlan = useCallback(
+        (scene: CanvasDirectorScene, generate: boolean) => {
+            const sourceBounds = directorSourceNodes.length
+                ? {
+                      right: Math.max(...directorSourceNodes.map((node) => node.position.x + node.width)),
+                      top: Math.min(...directorSourceNodes.map((node) => node.position.y)),
+                  }
+                : null;
+            const center = getCanvasCenter();
+            const origin = sourceBounds ? { x: sourceBounds.right + 180, y: sourceBounds.top } : { x: center.x - 380, y: center.y - 120 };
+            const result = materializeDirectorScene(scene, effectiveConfig, origin);
+            const existingNodeIds = new Set(nodesRef.current.map((node) => node.id));
+            const safeConnections = result.connections.filter((connection) => existingNodeIds.has(connection.fromNodeId) || result.nodes.some((node) => node.id === connection.fromNodeId));
+            const nextNodes = [...nodesRef.current, ...result.nodes];
+            const nextConnections = [...connectionsRef.current, ...safeConnections];
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            setSelectedNodeIds(new Set(result.nodes.map((node) => node.id)));
+            setSelectedConnectionId(null);
+            saveDirectorScene(result.scene);
+            setDirectorPlannerOpen(false);
+            message.success(t(generate ? "canvas.director.generating" : "canvas.director.written", { count: result.scene.shots.length }));
+
+            const sceneNode = result.nodes.find((node) => node.metadata?.workflowKind === "director-scene");
+            if (sceneNode) window.setTimeout(() => focusNode(sceneNode.id), 30);
+            if (generate) {
+                window.setTimeout(() => {
+                    void (async () => {
+                        for (const shot of result.scene.shots) {
+                            if (!shot.configNodeId) continue;
+                            await generateNodeRef.current?.(shot.configNodeId, shot.mode, "");
+                        }
+                    })();
+                }, 120);
+            }
+        },
+        [directorSourceNodes, effectiveConfig, focusNode, getCanvasCenter, message, saveDirectorScene, t],
+    );
 
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData, imageId?: string) => {
@@ -3270,6 +3567,7 @@ function InfiniteCanvasPage() {
                     onUpscale={(node) => setUpscaleNodeId(node.id)}
                     onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
                     onAngle={(node) => setAngleNodeId(node.id)}
+                    onLighting={(node) => setLightingNodeId(node.id)}
                     onViewImage={handleNodeViewImage}
                     onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
@@ -3303,6 +3601,7 @@ function InfiniteCanvasPage() {
                     onAddText={() => createNode(CanvasNodeType.Text)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
                     onAddGroup={() => createNode(CanvasNodeType.Group)}
+                    onOpenDirector={openDirectorWorkbench}
                     onAddExtensionNode={(type) => createNode(type)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
@@ -3312,6 +3611,33 @@ function InfiniteCanvasPage() {
                     onCanvasToolChange={setCanvasTool}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
+                />
+
+                <CanvasDirectorWorkbench
+                    open={directorOpen}
+                    scene={activeDirectorScene}
+                    shot={activeDirectorShot}
+                    sourceNodes={nodes}
+                    onClose={() => setDirectorOpen(false)}
+                    onShotChange={updateDirectorShot}
+                    onOpenPlanner={() => setDirectorPlannerOpen(true)}
+                    onApplyShot={applyDirectorShot}
+                    onExportWhitebox={exportDirectorWhitebox}
+                />
+
+                <CanvasDirectorConsole
+                    open={directorPlannerOpen}
+                    config={effectiveConfig}
+                    sourceNodes={directorSourceNodes}
+                    scenes={currentProject?.directorScenes || []}
+                    onClose={() => setDirectorPlannerOpen(false)}
+                    onPlan={planDirectorScene}
+                    onSaveScene={(scene) => {
+                        saveDirectorScene(scene);
+                        setDirectorSceneId(scene.id);
+                        setDirectorShotId(scene.shots[0]?.id || null);
+                    }}
+                    onMaterialize={materializeDirectorPlan}
                 />
 
                 {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={setViewport} /> : null}
@@ -3369,6 +3695,8 @@ function InfiniteCanvasPage() {
                 </Modal>
 
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
+
+                {lightingNode?.metadata?.content ? <CanvasNodeLightingDialog dataUrl={lightingNode.metadata.content} open={Boolean(lightingNode)} onClose={() => setLightingNodeId(null)} onConfirm={(params) => void generateLightingNode(lightingNode!, params)} /> : null}
 
                 <Modal
                     title={t("canvas.projectPage.imageDetails")}

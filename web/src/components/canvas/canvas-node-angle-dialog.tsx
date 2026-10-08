@@ -11,11 +11,20 @@ export type CanvasImageAngleParams = {
 };
 
 const defaultParams: CanvasImageAngleParams = {
-    horizontalAngle: 0,
-    pitchAngle: 9,
+    horizontalAngle: 45,
+    pitchAngle: 0,
     cameraDistance: 4.8,
     wideAngle: false,
 };
+
+const anglePresets = [
+    { label: "正面", horizontalAngle: 0, pitchAngle: 0 },
+    { label: "左侧", horizontalAngle: -90, pitchAngle: 0 },
+    { label: "右侧", horizontalAngle: 90, pitchAngle: 0 },
+    { label: "背面", horizontalAngle: 180, pitchAngle: 0 },
+    { label: "俯视", horizontalAngle: 0, pitchAngle: 60 },
+    { label: "仰视", horizontalAngle: 0, pitchAngle: -45 },
+];
 
 export function CanvasNodeAngleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageAngleParams) => void }) {
     const { t } = useTranslation();
@@ -47,8 +56,18 @@ export function CanvasNodeAngleDialog({ dataUrl, open, onClose, onConfirm }: { d
                         </Button>
                     </div>
                     <div className="space-y-6 py-2">
-                        <AngleSlider label={t("canvas.editors.horizontal")} value={params.horizontalAngle} min={-60} max={60} step={1} suffix="deg" onChange={(value) => update("horizontalAngle", value)} />
-                        <AngleSlider label={t("canvas.editors.pitch")} value={params.pitchAngle} min={-45} max={45} step={1} suffix="deg" onChange={(value) => update("pitchAngle", value)} />
+                        <div>
+                            <div className="mb-2 font-medium opacity-75">视角预设</div>
+                            <div className="grid grid-cols-3 gap-2">
+                                {anglePresets.map((preset) => (
+                                    <Button key={preset.label} type={params.horizontalAngle === preset.horizontalAngle && params.pitchAngle === preset.pitchAngle ? "primary" : "default"} onClick={() => setParams((current) => ({ ...current, horizontalAngle: preset.horizontalAngle, pitchAngle: preset.pitchAngle }))}>
+                                        {preset.label}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                        <AngleSlider label={t("canvas.editors.horizontal")} value={params.horizontalAngle} min={-180} max={180} step={1} suffix="deg" onChange={(value) => update("horizontalAngle", value)} />
+                        <AngleSlider label={t("canvas.editors.pitch")} value={params.pitchAngle} min={-60} max={60} step={1} suffix="deg" onChange={(value) => update("pitchAngle", value)} />
                         <AngleSlider label={t("canvas.editors.distance")} value={params.cameraDistance} min={1} max={10} step={0.1} onChange={(value) => update("cameraDistance", value)} />
                         <div className="grid grid-cols-[88px_1fr_72px] items-center gap-4">
                             <span className="font-medium opacity-75">{t("canvas.editors.lens")}</span>

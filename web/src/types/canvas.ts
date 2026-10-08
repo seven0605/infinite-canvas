@@ -25,6 +25,119 @@ export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 
+export type CanvasCameraControl = {
+    enabled: boolean;
+    cameraId: string;
+    lensId: string;
+    focalLengthMm: number;
+    apertureF: number;
+};
+
+export type CanvasLightingParams = {
+    azimuth: number;
+    elevation: number;
+    brightness: number;
+    lightColor: string;
+    rimLight: boolean;
+    softness: "soft" | "hard";
+    presetId: string;
+    smartDescription: string;
+};
+
+export type CanvasDirectorShot = {
+    id: string;
+    index: number;
+    title: string;
+    purpose: string;
+    mode: "image" | "video";
+    durationSeconds: number;
+    shotSize: string;
+    cameraAngle: string;
+    cameraMovement: string;
+    action: string;
+    composition: string;
+    lighting: string;
+    sound: string;
+    prompt: string;
+    negativePrompt: string;
+    referenceNodeIds: string[];
+    cameraControl: CanvasCameraControl;
+    blocking: CanvasDirectorBlocking;
+    previewNodeId?: string;
+    promptNodeId?: string;
+    configNodeId?: string;
+};
+
+export type CanvasDirectorBlocking = {
+    cameraPosition: [number, number, number];
+    cameraTarget: [number, number, number];
+    cameraMovementMode: "locked" | "free";
+    cameraLockedActorId?: string;
+    cameraLockOffset: [number, number];
+    keyframes: CanvasDirectorKeyframe[];
+    actors: Array<{
+        id: string;
+        sourceNodeId?: string;
+        name: string;
+        position: [number, number, number];
+        rotation: [number, number, number];
+        scale: [number, number, number];
+        uniformScale: boolean;
+        color: string;
+        actionClip: "idle" | "walk" | "run" | "agree" | "point" | "wave";
+        playbackSpeed: number;
+        loop: boolean;
+        visible: boolean;
+        castShadow: boolean;
+    }>;
+    lights: Array<{
+        id: string;
+        name: string;
+        type: "directional" | "point" | "ambient";
+        position: [number, number, number];
+        intensity: number;
+        color: string;
+        visible: boolean;
+        castShadow: boolean;
+    }>;
+};
+
+export type CanvasDirectorInterpolation = "linear" | "easeInOut" | "bezier";
+
+export type CanvasDirectorKeyframe = {
+    id: string;
+    targetType: "actor" | "camera" | "light";
+    targetId: string;
+    time: number;
+    interpolation: CanvasDirectorInterpolation;
+    curveOffset: [number, number, number];
+    position: [number, number, number];
+    rotation?: [number, number, number];
+    scale?: [number, number, number];
+    actionClip?: "idle" | "walk" | "run" | "agree" | "point" | "wave";
+    playbackSpeed?: number;
+    loop?: boolean;
+    cameraTarget?: [number, number, number];
+    cameraMovementMode?: "locked" | "free";
+    cameraLockedActorId?: string;
+    cameraLockOffset?: [number, number];
+    intensity?: number;
+    color?: string;
+};
+
+export type CanvasDirectorScene = {
+    id: string;
+    title: string;
+    summary: string;
+    objective: string;
+    aspectRatio: string;
+    sourceNodeIds: string[];
+    planningModel: string;
+    shots: CanvasDirectorShot[];
+    createdAt: string;
+    updatedAt: string;
+};
+
 export type CanvasNodeImage = {
     id: string;
     status: CanvasNodeStatus;
@@ -59,6 +172,8 @@ export type CanvasNodeMetadata = {
     quality?: string;
     background?: string;
     count?: number;
+    cameraControl?: CanvasCameraControl;
+    lighting?: CanvasLightingParams;
     textCount?: number;
     texts?: CanvasNodeText[];
     primaryTextId?: string;
@@ -82,9 +197,13 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     videoTaskId?: string;
-    videoTaskProvider?: "openai" | "gemini";
+    videoTaskProvider?: "openai" | "gemini" | "minimax";
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
+    workflowKind?: "director-scene" | "director-shot" | "director-preview";
+    directorSceneId?: string;
+    directorShotId?: string;
+    shotIndex?: number;
 };
 
 export type CanvasNodeData = {

@@ -7,6 +7,7 @@ import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/medi
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { buildMiniMaxH3Content, isMiniMaxH3Request, miniMaxH3ApiBaseUrl, miniMaxH3Resolution } from "./minimax-h3";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -19,13 +20,25 @@ type VideoMediaOptions = RequestOptions & { videos?: ReferenceVideo[]; audios?: 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "plugin"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "minimax" | "plugin"; model: string };
 type GeminiInlineData = { bytesBase64Encoded: string; mimeType: string };
 type GeminiVideoOperation = {
     name?: string;
     done?: boolean;
     error?: { message?: string };
     response?: { generateVideoResponse?: { generatedSamples?: Array<{ video?: { uri?: string } }> } };
+};
+type MiniMaxH3TaskResponse = {
+    task_id?: string;
+    task?: {
+        id?: string;
+        status?: string;
+        content?: { url?: string } | null;
+        error?: { message?: string } | string;
+        fail_reason?: string;
+    };
+    error?: { message?: string } | string;
+    message?: string;
 };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
@@ -75,6 +88,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (isMiniMaxH3Request(requestConfig.baseUrl, modelOptionName(selectedModel))) return createMiniMaxH3VideoTask(requestConfig, selectedModel, prompt, references, options);
     if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
@@ -86,6 +100,7 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (task.provider === "minimax") return pollMiniMaxH3VideoTask(requestConfig, task, options);
     if (task.provider === "gemini") return pollGeminiVideoTask(requestConfig, task, options);
     return pollOpenAIVideoTask(requestConfig, task, options);
 }
@@ -188,6 +203,68 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
             return { status: "completed", result: { blob: content.data } };
         }
         if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
+        return { status: "pending" };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
+}
+
+function miniMaxH3ApiUrl(config: Pick<AiConfig, "baseUrl">, path: string) {
+    return withLocalProxy(`${miniMaxH3ApiBaseUrl(config.baseUrl)}/${path.replace(/^\/+/, "")}`);
+}
+
+async function createMiniMaxH3VideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
+    const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
+    const videoUrls = await Promise.all(videos.map((file) => readFileAsDataUrl(file)));
+    const audioUrls = await Promise.all(audios.map((file) => readFileAsDataUrl(file)));
+    const content = buildMiniMaxH3Content(prompt, images, videoUrls, audioUrls, resolveVideoMode(config.videoMode, images.length));
+    const usesFrames = content.some((item) => item.type === "image_url" && (item.role === "first_frame" || item.role === "last_frame"));
+    const hasReferences = content.length > 1;
+    const ratio = inferVideoRatio(config.size);
+    try {
+        const created = unwrapEnvelope(
+            (
+                await axios.post<ApiEnvelope<MiniMaxH3TaskResponse>>(
+                    miniMaxH3ApiUrl(config, "/video_generation"),
+                    {
+                        model: modelOptionName(model),
+                        content,
+                        resolution: miniMaxH3Resolution(normalizeVideoResolution(config.vquality)),
+                        duration: Number(normalizeVideoSeconds(config.videoSeconds)),
+                        ratio: usesFrames ? "adaptive" : ratio === "auto" ? (hasReferences ? "adaptive" : "16:9") : ratio,
+                        aigc_watermark: boolConfig(config.videoWatermark, false),
+                    },
+                    { headers: aiHeaders(config, "application/json"), signal: options?.signal },
+                )
+            ).data,
+            apiText("noVideoTask"),
+        );
+        if (!created.task_id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.task_id, provider: "minimax", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+async function pollMiniMaxH3VideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const payload = unwrapEnvelope(
+            (await axios.get<ApiEnvelope<MiniMaxH3TaskResponse>>(miniMaxH3ApiUrl(config, `/query/video_generation/${encodeURIComponent(task.id)}`), { headers: aiHeaders(config), signal: options?.signal })).data,
+            apiText("videoTaskQueryFailed"),
+        );
+        const remoteTask = payload.task;
+        if (!remoteTask) return { status: "failed", error: apiText("noVideoTask") };
+        const status = remoteTask.status?.toLowerCase();
+        if (status === "succeeded" || status === "completed") {
+            const url = remoteTask.content?.url;
+            if (!url) return { status: "failed", error: apiText("noPlayableVideo") };
+            return { status: "completed", result: await videoResultFromUrl(url, options) };
+        }
+        if (status === "failed" || status === "cancelled") {
+            return { status: "failed", error: readApiErrorMessage(remoteTask.error) || readApiErrorMessage(remoteTask.fail_reason) || apiText("videoGenerationFailed") };
+        }
         return { status: "pending" };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));

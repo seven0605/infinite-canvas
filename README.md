@@ -22,7 +22,12 @@
   <a href="docs/content/docs/overview/quick-start.mdx">快速开始</a> · <a href="docs/content/docs/overview/features.mdx">功能介绍</a> · <a href="docs/content/docs/overview/render.mdx">Render 部署</a> · <a href="docs/content/docs/overview/docker.mdx">Docker 部署</a> · <a href="docs/content/docs/canvas/canvas-node-manual.mdx">画布节点操作手册</a> · <a href="docs/content/docs/canvas/canvas-shortcuts.mdx">画布快捷键</a> · <a href="SECURITY.md">漏洞提交</a> · <a href="docs/content/docs/progress/todo.mdx">待办事项</a> · <a href="canvas-agent/README.md">本地 Canvas Agent</a> · <a href="plugins/infinite-canvas">Codex app 插件</a>
 </p>
 
+> [!IMPORTANT]
+> 本仓库是基于 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas) 的非官方二次开发版本，由本仓库维护者独立维护。项目继续采用 MIT License，并保留上游作者版权信息与前端标识；本分支不代表上游作者对新增功能的背书。
+
 无限画布是一款面向图片创作的开源工作台。它把画布编排、AI 图片生成、参考图编辑、对话助手、提示词库和素材沉淀放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果。
+
+本分支在上游基础上增加了可执行的 3D 导演台、人物/摄影机/灯光关键帧、30 FPS 动态白模导出、实时机位监看、摄影机与光学控制、多角度和 AI 打光，以及 MiniMax H3 视频接口适配。
 
 > [!CAUTION]
 > 项目目前处于开发阶段，不保证历史数据兼容。各种本地存储格式都可能直接调整，欢迎关注后续更新。

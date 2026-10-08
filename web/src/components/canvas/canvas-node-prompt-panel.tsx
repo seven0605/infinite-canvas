@@ -8,6 +8,7 @@ import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveC
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
+import { CanvasCameraControlPopover } from "./canvas-camera-control-popover";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
@@ -107,11 +108,23 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange, 
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
                             />
+                            <CanvasCameraControlPopover
+                                value={node.metadata?.cameraControl}
+                                buttonClassName="!h-10 !max-w-[130px] !justify-start !rounded-full !px-3"
+                                onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })}
+                                onOpenChange={onImageSettingsOpenChange}
+                            />
                         </>
                     ) : mode === "video" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
                             <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[220px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <CanvasCameraControlPopover
+                                value={node.metadata?.cameraControl}
+                                buttonClassName="!h-10 !max-w-[130px] !justify-start !rounded-full !px-3"
+                                onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })}
+                                onOpenChange={onImageSettingsOpenChange}
+                            />
                         </>
                     ) : mode === "audio" ? (
                         <>
