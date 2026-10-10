@@ -568,7 +568,7 @@ export function CanvasDirectorWorkbench({ open, scene, shot, sourceNodes, onClos
             onCancel={onClose}
             destroyOnHidden
             forceRender
-            styles={{ content: { padding: 0, overflow: "hidden" }, body: { height: "calc(100vh - 72px)", minHeight: 680, padding: 0 } }}
+            styles={{ container: { padding: 0, overflow: "hidden" }, body: { height: "calc(100vh - 72px)", minHeight: 680, padding: 0 } }}
         >
             {scene && shot ? (
                 <div className="flex h-full min-h-0 flex-col bg-background text-foreground">

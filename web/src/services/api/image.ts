@@ -24,10 +24,7 @@ type ResponseToolCall = {
     thoughtSignature?: string;
 };
 
-type ResponseInputMessage =
-    | AiTextMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
-    | { role: "tool"; tool_call_id: string; content: string };
+type ResponseInputMessage = AiTextMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
 
 type ResponseFunctionTool = {
     type: "function";
@@ -47,10 +44,7 @@ type ToolResponseResult = {
 type ToolChoice = "auto" | "required" | { type: "function"; name: string };
 type ResponseMessageContent = AiTextMessage["content"] | string;
 type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem =
-    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
-    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
 type ResponseApiToolDefinition = {
     type: "function";
     name: string;
@@ -58,9 +52,7 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem =
-    | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
 type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
@@ -70,6 +62,13 @@ type ResponseApiPayload = {
     msg?: string;
 };
 type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
+type ChatCompletionPayload = {
+    choices?: Array<{ message?: { content?: string }; delta?: { content?: string } }>;
+    error?: { message?: string };
+    code?: number;
+    msg?: string;
+};
+type ChatCompletionStreamState = { buffer: string; text: string; error?: string };
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
@@ -118,6 +117,10 @@ const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
+const AGNES_IMAGE_RATIOS = ["1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"];
+
+let agnesImageQueue: Promise<unknown> = Promise.resolve();
+let lastAgnesImageRequestAt = 0;
 
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
@@ -242,6 +245,23 @@ function supportsGeminiImageSize(model: string) {
     return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
 }
 
+function isAgnesImageModel(model: string) {
+    return /^agnes-image-/i.test(model.trim());
+}
+
+function isAgnesTextModel(model: string) {
+    return /^agnes-(?!image-|video-)/i.test(model.trim());
+}
+
+function isAgnesApi(config: Pick<AiConfig, "baseUrl">) {
+    try {
+        const hostname = new URL(config.baseUrl).hostname.toLowerCase();
+        return hostname === "agnes-ai.com" || hostname.endsWith(".agnes-ai.com");
+    } catch {
+        return false;
+    }
+}
+
 function resolveImageSource(item: Record<string, unknown>) {
     if (typeof item.b64_json === "string" && item.b64_json) {
         return `data:image/png;base64,${item.b64_json}`;
@@ -257,10 +277,7 @@ function parseImagePayload(payload: ImageApiResponse) {
         throw new Error(payload.msg || apiText("requestFailed"));
     }
     // Support data, images, and results response fields used by different APIs.
-    const imageList = payload.data
-        || (payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined
-        || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
-        || [];
+    const imageList = payload.data || ((payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined) || ((payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined) || [];
     const images = imageList
         .map(resolveImageSource)
         .filter((value): value is string => Boolean(value))
@@ -269,9 +286,7 @@ function parseImagePayload(payload: ImageApiResponse) {
     if (images.length === 0) {
         // Check whether the response contains data in an unrecognized format.
         const rawKeys = Object.keys(payload).filter((k) => k !== "code" && k !== "msg" && k !== "error");
-        throw new Error(rawKeys.length > 0
-            ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") })
-            : apiText("noImageReturned"));
+        throw new Error(rawKeys.length > 0 ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") }) : apiText("noImageReturned"));
     }
 
     return images;
@@ -296,17 +311,8 @@ function readApiErrorMessage(value: unknown): string {
     if (typeof value !== "object") return "";
     const payload = value as { msg?: unknown; message?: unknown; error?: unknown; detail?: unknown };
     // error may be a string or an object containing a message.
-    const errorMsg =
-        typeof payload.error === "string"
-            ? payload.error
-            : (payload.error as { message?: unknown })?.message;
-    return (
-        readApiErrorMessage(payload.msg) ||
-        readApiErrorMessage(payload.message) ||
-        readApiErrorMessage(errorMsg) ||
-        readApiErrorMessage(payload.detail) ||
-        ""
-    );
+    const errorMsg = typeof payload.error === "string" ? payload.error : (payload.error as { message?: unknown })?.message;
+    return readApiErrorMessage(payload.msg) || readApiErrorMessage(payload.message) || readApiErrorMessage(errorMsg) || readApiErrorMessage(payload.detail) || "";
 }
 
 function readAxiosError(error: unknown, fallback: string) {
@@ -532,13 +538,78 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
     return { ...result, content: state.text || result.content };
 }
 
+function parseChatCompletion(payload: ChatCompletionPayload) {
+    if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || apiText("requestFailed"));
+    if (payload.error?.message) throw new Error(payload.error.message);
+    return payload.choices?.[0]?.message?.content || "";
+}
+
+function consumeChatCompletionStreamBlock(block: string, state: ChatCompletionStreamState, onDelta?: (text: string) => void) {
+    const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n")
+        .trim();
+    if (!data || data === "[DONE]") return;
+    const payload = JSON.parse(data) as ChatCompletionPayload;
+    if (payload.error?.message) {
+        state.error = payload.error.message;
+        return;
+    }
+    const delta = payload.choices?.[0]?.delta?.content;
+    if (delta) {
+        state.text += delta;
+        onDelta?.(state.text);
+    }
+}
+
+function consumeChatCompletionStreamText(state: ChatCompletionStreamState, text: string, onDelta?: (text: string) => void, flush = false) {
+    state.buffer += text;
+    for (;;) {
+        const match = state.buffer.match(/\r?\n\r?\n/);
+        if (!match) break;
+        const index = match.index ?? 0;
+        consumeChatCompletionStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
+    }
+    if (flush && state.buffer.trim()) {
+        consumeChatCompletionStreamBlock(state.buffer, state, onDelta);
+        state.buffer = "";
+    }
+}
+
+async function requestAgnesStreamingResponse(config: AiConfig, messages: AiTextMessage[], onDelta?: (text: string) => void, options?: RequestOptions) {
+    const response = await fetch(aiApiUrl(config, "/chat/completions"), {
+        method: "POST",
+        headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
+        body: JSON.stringify({ model: config.model, messages: withSystemMessage(config, messages), stream: true }),
+        signal: options?.signal,
+    });
+    if (!response.ok) throw new Error(await readFetchError(response, apiText("requestFailed")));
+    if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+        const text = parseChatCompletion((await response.json()) as ChatCompletionPayload);
+        if (text) onDelta?.(text);
+        return text;
+    }
+    if (!response.body) return "";
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: ChatCompletionStreamState = { buffer: "", text: "" };
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeChatCompletionStreamText(state, decoder.decode(value, { stream: true }), onDelta);
+        if (state.error) throw new Error(state.error);
+    }
+    consumeChatCompletionStreamText(state, decoder.decode(), onDelta, true);
+    if (state.error) throw new Error(state.error);
+    return state.text;
+}
+
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
-    const systemText = [
-        config.systemPrompt.trim(),
-        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    const systemText = [config.systemPrompt.trim(), ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : []))].filter(Boolean).join("\n\n");
     const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
     return {
         contents,
@@ -598,10 +669,7 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
         description: tool.function.description,
         parameters: tool.function.parameters,
     }));
-    const functionCallingConfig =
-        typeof toolChoice === "object"
-            ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] }
-            : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
+    const functionCallingConfig = typeof toolChoice === "object" ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] } : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
     return {
         tools: [{ functionDeclarations }],
         toolConfig: { functionCallingConfig },
@@ -707,6 +775,122 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     return parseGeminiImagePayload(response.data);
 }
 
+async function requestAgnesImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
+    const { size, ratio, minIntervalMs } = resolveAgnesImageShape(config);
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const requests = Array.from({ length: count }, () =>
+        enqueueAgnesImageRequest(async () => {
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                await waitForAgnesImageSlot(minIntervalMs, options?.signal);
+                try {
+                    const response = await axios.post<ImageApiResponse>(
+                        aiApiUrl(config, "/images/generations"),
+                        {
+                            model: config.model,
+                            prompt: withSystemPrompt(config, prompt),
+                            size,
+                            ...(ratio ? { ratio } : {}),
+                            extra_body: {
+                                ...(images.length ? { image: images } : {}),
+                                response_format: "url",
+                            },
+                        },
+                        { headers: aiHeaders(config, "application/json"), signal: options?.signal, timeout: 360_000 },
+                    );
+                    return parseImagePayload(response.data);
+                } catch (error) {
+                    const retryAfterMs = agnesImageRetryDelay(error, minIntervalMs);
+                    if (!retryAfterMs || attempt === 1) throw error;
+                    await abortableDelay(retryAfterMs, options?.signal);
+                }
+            }
+            return [];
+        }),
+    );
+    return (await Promise.all(requests)).flat();
+}
+
+function resolveAgnesImageShape(config: AiConfig) {
+    const quality = config.quality.trim().toLowerCase();
+    const dimensions = parseImageDimensions(config.size.trim());
+    const size =
+        quality === "4k" || quality === "high"
+            ? "4K"
+            : quality === "3k"
+              ? "3K"
+              : quality === "2k" || quality === "medium" || quality === "hd"
+                ? "2K"
+                : dimensions && Math.max(dimensions.width, dimensions.height) > 3584
+                  ? "4K"
+                  : dimensions && Math.max(dimensions.width, dimensions.height) > 2560
+                    ? "3K"
+                    : dimensions && Math.max(dimensions.width, dimensions.height) > 1536
+                      ? "2K"
+                      : "1K";
+    const requestedRatio = dimensions ? `${dimensions.width}:${dimensions.height}` : config.size.trim();
+    const ratio = requestedRatio && requestedRatio.toLowerCase() !== "auto" ? closestAgnesImageRatio(requestedRatio) : undefined;
+    const minIntervalMs = size === "1K" ? 3_100 : size === "2K" ? 6_100 : 60_100;
+    return { size, ratio, minIntervalMs };
+}
+
+function closestAgnesImageRatio(value: string) {
+    const target = parseRatioValue(value);
+    const targetRatio = target.width / target.height;
+    return AGNES_IMAGE_RATIOS.reduce((best, item) => {
+        const current = parseRatioValue(item);
+        const bestRatio = parseRatioValue(best);
+        return Math.abs(current.width / current.height - targetRatio) < Math.abs(bestRatio.width / bestRatio.height - targetRatio) ? item : best;
+    });
+}
+
+function enqueueAgnesImageRequest<T>(request: () => Promise<T>) {
+    const result = agnesImageQueue.then(request, request);
+    agnesImageQueue = result.then(
+        () => undefined,
+        () => undefined,
+    );
+    return result;
+}
+
+async function waitForAgnesImageSlot(minIntervalMs: number, signal?: AbortSignal) {
+    const waitMs = Math.max(0, lastAgnesImageRequestAt + minIntervalMs - Date.now());
+    if (waitMs) await abortableDelay(waitMs, signal);
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
+    lastAgnesImageRequestAt = Date.now();
+}
+
+function agnesImageRetryDelay(error: unknown, fallbackMs: number) {
+    const message = axios.isAxiosError(error) ? readApiErrorMessage(error.response?.data) || error.message : readApiErrorMessage(error);
+    const rateLimited = axios.isAxiosError(error) && error.response?.status === 429;
+    if (!rateLimited && !/(?:rate.?limit|too many requests|resolution rate limit|频率|限流)/i.test(message)) return null;
+    if (axios.isAxiosError(error)) {
+        const retryAfter = error.response?.headers?.["retry-after"];
+        const seconds = Number(Array.isArray(retryAfter) ? retryAfter[0] : retryAfter);
+        if (Number.isFinite(seconds) && seconds > 0) return Math.max(fallbackMs, seconds * 1_000);
+    }
+    return fallbackMs;
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timer = window.setTimeout(finish, ms);
+        const abort = () => {
+            window.clearTimeout(timer);
+            signal?.removeEventListener("abort", abort);
+            reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+        };
+        function finish() {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+        }
+        signal?.addEventListener("abort", abort, { once: true });
+    });
+}
+
 function parseGeminiImagePayload(payload: GeminiPayload) {
     validateGeminiPayload(payload);
     const images =
@@ -749,6 +933,13 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
+    if (isAgnesApi(requestConfig) || isAgnesImageModel(requestConfig.model)) {
+        try {
+            return await requestAgnesImages(requestConfig, prompt, [], n, options);
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
@@ -815,6 +1006,13 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
     }
+    if (isAgnesApi(requestConfig) || isAgnesImageModel(requestConfig.model)) {
+        try {
+            return await requestAgnesImages(requestConfig, requestPrompt, references, n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
@@ -876,11 +1074,24 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === apiText("noContent")) onDelta(answer);
             return answer;
         }
-        const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-            ...(requestConfig.reasoningEffort === "auto" ? {} : { reasoning: { effort: requestConfig.reasoningEffort } }),
-        }, onDelta, options)).content || apiText("noContent");
+        if (isAgnesApi(requestConfig) || isAgnesTextModel(requestConfig.model)) {
+            const answer = (await requestAgnesStreamingResponse(requestConfig, messages, onDelta, options)) || apiText("noContent");
+            if (answer === apiText("noContent")) onDelta(answer);
+            return answer;
+        }
+        const answer =
+            (
+                await requestStreamingResponse(
+                    requestConfig,
+                    {
+                        model: requestConfig.model,
+                        input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                        ...(requestConfig.reasoningEffort === "auto" ? {} : { reasoning: { effort: requestConfig.reasoningEffort } }),
+                    },
+                    onDelta,
+                    options,
+                )
+            ).content || apiText("noContent");
         if (answer === apiText("noContent")) onDelta(answer);
         return answer;
     } catch (error) {

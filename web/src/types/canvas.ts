@@ -173,6 +173,7 @@ export type CanvasNodeMetadata = {
     background?: string;
     count?: number;
     cameraControl?: CanvasCameraControl;
+    lutPresetId?: string;
     lighting?: CanvasLightingParams;
     textCount?: number;
     texts?: CanvasNodeText[];

@@ -9,6 +9,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasCameraControlPopover } from "./canvas-camera-control-popover";
+import { CanvasLutPicker } from "./canvas-lut-picker";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
@@ -91,38 +92,50 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange, 
                 placeholder={t(`canvas.promptPanel.${mode === "image" && hasImageContent ? "editImage" : mode === "text" && hasTextContent ? "editText" : mode}`)}
             />
 
-            <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
+            <div className="mt-2 flex min-w-0 items-end justify-between gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     <Tooltip title={t("canvas.promptPanel.expandEditor")}>
                         <Button type="text" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !bg-transparent !p-0" style={{ color: theme.node.text }} icon={<Maximize2 className="size-3.5" />} onClick={openExpandedEditor} aria-label={t("canvas.promptPanel.expandEditor")} />
                     </Tooltip>
                     <CanvasPromptLibrary onSelect={updatePrompt} />
                     {mode === "image" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
+                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} className="min-w-[140px] max-w-[190px]" />
                             <CanvasImageSettingsPopover
                                 config={config}
                                 placement="topLeft"
-                                buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
+                                buttonClassName="!h-10 !w-[130px] shrink-0 !justify-start !rounded-full !px-3"
                                 onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
                             />
                             <CanvasCameraControlPopover
                                 value={node.metadata?.cameraControl}
-                                buttonClassName="!h-10 !max-w-[130px] !justify-start !rounded-full !px-3"
+                                buttonClassName="!h-10 !w-[112px] shrink-0 !justify-start !rounded-full !px-3"
                                 onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })}
+                                onOpenChange={onImageSettingsOpenChange}
+                            />
+                            <CanvasLutPicker
+                                value={node.metadata?.lutPresetId}
+                                buttonClassName="!h-10 !w-[132px] shrink-0 !justify-start !rounded-full !px-3"
+                                onChange={(lutPresetId) => onConfigChange(node.id, { lutPresetId })}
                                 onOpenChange={onImageSettingsOpenChange}
                             />
                         </>
                     ) : mode === "video" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[220px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} className="min-w-[140px] max-w-[190px]" />
+                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !w-[160px] shrink-0 !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                             <CanvasCameraControlPopover
                                 value={node.metadata?.cameraControl}
-                                buttonClassName="!h-10 !max-w-[130px] !justify-start !rounded-full !px-3"
+                                buttonClassName="!h-10 !w-[112px] shrink-0 !justify-start !rounded-full !px-3"
                                 onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })}
+                                onOpenChange={onImageSettingsOpenChange}
+                            />
+                            <CanvasLutPicker
+                                value={node.metadata?.lutPresetId}
+                                buttonClassName="!h-10 !w-[132px] shrink-0 !justify-start !rounded-full !px-3"
+                                onChange={(lutPresetId) => onConfigChange(node.id, { lutPresetId })}
                                 onOpenChange={onImageSettingsOpenChange}
                             />
                         </>

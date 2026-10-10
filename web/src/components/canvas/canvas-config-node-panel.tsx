@@ -9,6 +9,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasCameraControlPopover } from "./canvas-camera-control-popover";
+import { CanvasLutPicker } from "./canvas-lut-picker";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
@@ -97,6 +98,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     <Settings2 className="size-3.5" />
                     {t("canvas.configNode.compose")}
                 </button>
+                {(mode === "image" || mode === "video") && (
+                    <CanvasLutPicker
+                        value={node.metadata?.lutPresetId}
+                        buttonClassName="!h-7 !max-w-[132px] !justify-start !rounded-md !border !px-2 !text-[11px]"
+                        onChange={(lutPresetId) => onConfigChange(node.id, { lutPresetId })}
+                    />
+                )}
             </div>
 
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_220px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
