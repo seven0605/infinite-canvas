@@ -40,5 +40,20 @@ export function buildMiniMaxH3Content(prompt: string, images: string[], videos: 
 }
 
 export function miniMaxH3Resolution(value: string) {
-    return /^(1080p?|2k)$/i.test(value.trim()) ? "2K" : "768P";
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "2k") return "2K";
+    if (/^1080p?$/.test(normalized)) return "1080P";
+    return "768P";
+}
+
+export function miniMaxH3ResolutionValue(value: string) {
+    const resolution = miniMaxH3Resolution(value);
+    if (resolution === "2K") return "2k";
+    if (resolution === "1080P") return "1080";
+    return "768";
+}
+
+export function normalizeMiniMaxH3DataUrl(value: string) {
+    const match = value.match(/^data:([^;,]+)((?:;[^;,]+)*)?;base64,([\s\S]*)$/i);
+    return match ? `data:${match[1]};base64,${match[3]}` : value;
 }

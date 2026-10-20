@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Segmented, Switch } from "antd";
-import { CircleDot, Clapperboard, Eraser, Grid2x2, Group, Hand, Image as ImageIcon, Info, Moon, MousePointer2, Music2, Palette, Puzzle, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
+import { CircleDot, Clapperboard, Eraser, Grid2x2, Group, Image as ImageIcon, Info, Moon, Music2, Palette, Puzzle, Redo2, Settings2, Sparkles, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
 
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
@@ -11,9 +11,9 @@ import { useTranslation } from "react-i18next";
 
 export function CanvasToolbar({
     selectedCount,
-    canvasTool,
     canUndo,
     canRedo,
+    canOrganize,
     backgroundMode,
     showImageInfo,
     onAddImage,
@@ -26,17 +26,17 @@ export function CanvasToolbar({
     onAddExtensionNode,
     onUndo,
     onRedo,
+    onOrganize,
     onUpload,
     onDelete,
     onClear,
-    onCanvasToolChange,
     onBackgroundModeChange,
     onShowImageInfoChange,
 }: {
     selectedCount: number;
-    canvasTool: "select" | "pan";
     canUndo: boolean;
     canRedo: boolean;
+    canOrganize: boolean;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     onAddImage: () => void;
@@ -49,10 +49,10 @@ export function CanvasToolbar({
     onAddExtensionNode: (type: string) => void;
     onUndo: () => void;
     onRedo: () => void;
+    onOrganize: () => void;
     onUpload: () => void;
     onDelete: () => void;
     onClear: () => void;
-    onCanvasToolChange: (tool: "select" | "pan") => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
     onShowImageInfoChange: (show: boolean) => void;
 }) {
@@ -93,14 +93,14 @@ export function CanvasToolbar({
         <div ref={rootRef} className="pointer-events-none absolute bottom-5 z-50 flex justify-center" style={{ left: 300, right: 16 }}>
             {tip ? <DockTip label={tip} x={tipX} theme={theme} /> : null}
             <div ref={wrapRef} className="thin-scrollbar pointer-events-auto flex h-14 max-w-full items-center gap-1 overflow-x-auto rounded-xl border px-2 shadow-lg backdrop-blur [&>*]:shrink-0" style={dockStyle}>
-                <ToolbarButton id={`tool-${canvasTool}`} label={t(`canvas.toolbar.${canvasTool}`)} active hovered={hovered} activeStyle={activeStyle} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={() => onCanvasToolChange(canvasTool === "select" ? "pan" : "select")}>
-                    {canvasTool === "select" ? <MousePointer2 className="size-4.5" /> : <Hand className="size-4.5" />}
-                </ToolbarButton>
                 <ToolbarButton id="tool-undo" label={t("canvas.undo")} disabled={!canUndo} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onUndo}>
                     <Undo2 className="size-4.5" />
                 </ToolbarButton>
                 <ToolbarButton id="tool-redo" label={t("canvas.redo")} disabled={!canRedo} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onRedo}>
                     <Redo2 className="size-4.5" />
+                </ToolbarButton>
+                <ToolbarButton id="tool-organize" label={t("canvas.toolbar.organize")} disabled={!canOrganize} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onOrganize}>
+                    <Sparkles className="size-4.5" />
                 </ToolbarButton>
                 <Divider theme={theme} />
                 <ToolbarButton id="tool-text" label={t("canvas.toolbar.text")} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddText}>
@@ -237,7 +237,8 @@ export function CanvasToolbar({
                                 value: "dots",
                                 label: (
                                     <span className="inline-flex items-center gap-1.5">
-                                        <CircleDot className="size-4" />{t("canvas.toolbar.dots")}
+                                        <CircleDot className="size-4" />
+                                        {t("canvas.toolbar.dots")}
                                     </span>
                                 ),
                             },
@@ -245,7 +246,8 @@ export function CanvasToolbar({
                                 value: "lines",
                                 label: (
                                     <span className="inline-flex items-center gap-1.5">
-                                        <Grid2x2 className="size-4" />{t("canvas.toolbar.lines")}
+                                        <Grid2x2 className="size-4" />
+                                        {t("canvas.toolbar.lines")}
                                     </span>
                                 ),
                             },
@@ -357,10 +359,9 @@ function DockTip({ label, x, theme }: { label: string; x: number; theme: CanvasT
 }
 
 function toolLabel(id: string, t: (key: string) => string) {
-    if (id === "tool-select") return t("canvas.toolbar.select");
-    if (id === "tool-pan") return t("canvas.toolbar.pan");
     if (id === "tool-undo") return t("canvas.undo");
     if (id === "tool-redo") return t("canvas.redo");
+    if (id === "tool-organize") return t("canvas.toolbar.organize");
     if (id === "tool-text") return t("canvas.toolbar.text");
     if (id === "tool-image") return t("canvas.toolbar.image");
     if (id === "tool-video") return t("canvas.toolbar.video");

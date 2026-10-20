@@ -3,11 +3,12 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
-import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
+import { clampVideoSeconds, computeVideoSize, inferVideoRatio, videoResolutionApiValue } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
-import { buildMiniMaxH3Content, isMiniMaxH3Request, miniMaxH3ApiBaseUrl, miniMaxH3Resolution } from "./minimax-h3";
+import { buildMiniMaxH3Content, isMiniMaxH3Request, miniMaxH3ApiBaseUrl, miniMaxH3Resolution, normalizeMiniMaxH3DataUrl } from "./minimax-h3";
+import { prepareMiniMaxH3VideoReferences } from "./minimax-h3-media";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -28,6 +29,9 @@ type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoRe
 type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string; message?: string; error?: { message?: string } };
 type RequestOptions = { signal?: AbortSignal };
 type VideoMediaOptions = RequestOptions & { videos?: ReferenceVideo[]; audios?: ReferenceAudio[] };
+const VIDEO_TASK_POLL_ATTEMPTS = 120;
+const VIDEO_TASK_POLL_INTERVAL_MS = 2_500;
+const LONG_VIDEO_TASK_POLL_INTERVAL_MS = 15_000;
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
@@ -73,13 +77,16 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
     const requestConfig = task.provider === "plugin" ? null : resolveModelRequestConfig(config, task.model);
-    const pollIntervalMs = requestConfig && isAgnesApi(requestConfig) ? 15_000 : 2_500;
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    // MiniMax H3 30-second jobs regularly need more than five minutes. Polling them
+    // every 2.5 seconds also creates unnecessary pressure on compatible gateways.
+    // Keep the existing attempt count, but give H3/Agnes tasks a ~30-minute window.
+    const pollIntervalMs = requestConfig && (task.provider === "minimax" || isAgnesApi(requestConfig)) ? LONG_VIDEO_TASK_POLL_INTERVAL_MS : VIDEO_TASK_POLL_INTERVAL_MS;
+    for (let attempt = 0; attempt < VIDEO_TASK_POLL_ATTEMPTS; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw videoTaskFailed(state.error);
-        if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: "" }));
+        if (attempt === VIDEO_TASK_POLL_ATTEMPTS - 1) throw new Error(apiText("videoTimeout", { provider: "" }));
         await delay(state.retryAfterMs || pollIntervalMs, options?.signal);
     }
     throw new Error(apiText("videoTimeout", { provider: "" }));
@@ -275,9 +282,10 @@ async function createMiniMaxH3VideoTask(config: AiConfig, model: string, prompt:
     const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
-    const videoUrls = await Promise.all(videos.map((file) => readFileAsDataUrl(file)));
-    const audioUrls = await Promise.all(audios.map((file) => readFileAsDataUrl(file)));
-    const content = buildMiniMaxH3Content(prompt, images, videoUrls, audioUrls, resolveVideoMode(config.videoMode, images.length));
+    const prepared = await prepareMiniMaxH3VideoReferences(videos, (options?.videos || []).map((video) => video.durationMs), images.length);
+    const videoUrls = await Promise.all(prepared.videos.map((file) => readFileAsDataUrl(file).then(normalizeMiniMaxH3DataUrl)));
+    const audioUrls = await Promise.all(audios.map((file) => readFileAsDataUrl(file).then(normalizeMiniMaxH3DataUrl)));
+    const content = buildMiniMaxH3Content(prompt, [...images, ...prepared.frameImages], videoUrls, audioUrls, resolveVideoMode(config.videoMode, images.length));
     const usesFrames = content.some((item) => item.type === "image_url" && (item.role === "first_frame" || item.role === "last_frame"));
     const hasReferences = content.length > 1;
     const ratio = inferVideoRatio(config.size);
@@ -467,10 +475,7 @@ function normalizeVideoSize(value: string, resolution?: string) {
 }
 
 function normalizeVideoResolution(value: string) {
-    if (value === "low") return "480p";
-    if (value === "auto" || value === "high" || value === "medium") return "720p";
-    const resolution = value.replace(/p$/i, "") || "720";
-    return `${resolution}p`;
+    return videoResolutionApiValue(value);
 }
 
 function isAgnesApi(config: Pick<AiConfig, "baseUrl">) {

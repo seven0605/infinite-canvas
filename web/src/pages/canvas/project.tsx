@@ -18,6 +18,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
+import { autoLayoutCanvasNodes, getCanvasLayoutBounds } from "@/lib/canvas/canvas-auto-layout";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 import { App, Button, Modal } from "antd";
@@ -240,7 +241,6 @@ function InfiniteCanvasPage() {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
-    const [canvasTool, setCanvasTool] = useState<"select" | "pan">("pan");
     const [size, setSize] = useState({ width: 1200, height: 720 });
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
@@ -1149,6 +1149,34 @@ function InfiniteCanvasPage() {
         setViewport({ x: size.width / 2, y: size.height / 2, k: 1 });
         setContextMenu(null);
     }, [size.height, size.width]);
+
+    const organizeCanvas = useCallback(() => {
+        const arrangedNodes = autoLayoutCanvasNodes(nodesRef.current, connectionsRef.current);
+        const bounds = getCanvasLayoutBounds(arrangedNodes);
+        if (!bounds) return;
+
+        nodesRef.current = arrangedNodes;
+        setNodes(arrangedNodes);
+        setSelectedNodeIds(new Set());
+        setSelectedConnectionId(null);
+        setSelectionBox(null);
+        setContextMenu(null);
+        setNodeCreatePosition(null);
+        setToolbarNodeId(null);
+        setDialogNodeId(null);
+
+        if (focusAnimRef.current) cancelAnimationFrame(focusAnimRef.current);
+        const padding = 96;
+        const scale = Math.min(1, Math.max(0.05, Math.min(Math.max(size.width - padding * 2, 1) / bounds.width, Math.max(size.height - padding * 2, 1) / bounds.height)));
+        const nextViewport = {
+            x: size.width / 2 - (bounds.left + bounds.width / 2) * scale,
+            y: size.height / 2 - (bounds.top + bounds.height / 2) * scale,
+            k: scale,
+        };
+        viewportRef.current = nextViewport;
+        setViewport(nextViewport);
+        message.success(t("canvas.projectPage.organized"));
+    }, [message, size.height, size.width, t]);
 
     const focusNode = useCallback(
         (nodeId: string) => {
@@ -2973,11 +3001,7 @@ function InfiniteCanvasPage() {
                 height: spec.height,
                 metadata: { ...videoMetadata(uploaded), workflowKind: "director-preview", directorSceneId: scene.id, directorShotId: shot.id, shotIndex: shot.index },
             };
-            const previousPreviewIds = new Set(
-                nodesRef.current
-                    .filter((node) => node.metadata?.workflowKind === "director-preview" && node.metadata.directorSceneId === scene.id && node.metadata.directorShotId === shot.id)
-                    .map((node) => node.id),
-            );
+            const previousPreviewIds = new Set(nodesRef.current.filter((node) => node.metadata?.workflowKind === "director-preview" && node.metadata.directorSceneId === scene.id && node.metadata.directorShotId === shot.id).map((node) => node.id));
             const updatedShot = { ...shot, referenceNodeIds: [...new Set([...shot.referenceNodeIds.filter((id) => !previousPreviewIds.has(id)), videoId])] };
             let savedShot: CanvasDirectorScene["shots"][number] = updatedShot;
             let nextNodes = [...nodesRef.current, videoNode];
@@ -3019,11 +3043,10 @@ function InfiniteCanvasPage() {
                 throw new Error(t("workbench.configFirst"));
             }
 
-            const references = buildCanvasResourceReferences(request.sourceNodes).filter((reference) => reference.kind === "image").slice(0, 8);
-            const prompt = [
-                buildDirectorPlanningPrompt(request),
-                references.length ? `随消息附带的图片顺序：\n${references.map((reference, index) => `- 图片${index + 1}=nodeId ${reference.nodeId}（${reference.title}）`).join("\n")}` : "",
-            ]
+            const references = buildCanvasResourceReferences(request.sourceNodes)
+                .filter((reference) => reference.kind === "image")
+                .slice(0, 8);
+            const prompt = [buildDirectorPlanningPrompt(request), references.length ? `随消息附带的图片顺序：\n${references.map((reference, index) => `- 图片${index + 1}=nodeId ${reference.nodeId}（${reference.title}）`).join("\n")}` : ""]
                 .filter(Boolean)
                 .join("\n\n");
             const images = references.length ? await resolveCanvasReferenceImages(references, nodesRef.current) : [];
@@ -3538,7 +3561,6 @@ function InfiniteCanvasPage() {
                 <InfiniteCanvas
                     containerRef={containerRef}
                     viewport={viewport}
-                    tool={canvasTool}
                     backgroundMode={backgroundMode}
                     onViewportChange={(next) => {
                         setViewport(next);
@@ -3673,6 +3695,7 @@ function InfiniteCanvasPage() {
                     onGenerateImage={generateImageFromTextNode}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
+                    onCaptureVideoFrame={(node) => void captureVideoNodeFrame(node.id, "current")}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
@@ -3695,9 +3718,9 @@ function InfiniteCanvasPage() {
 
                 <CanvasToolbar
                     selectedCount={selectedNodeIds.size}
-                    canvasTool={canvasTool}
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
+                    canOrganize={nodes.length > 1}
                     backgroundMode={backgroundMode}
                     showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
@@ -3710,10 +3733,10 @@ function InfiniteCanvasPage() {
                     onAddExtensionNode={(type) => createNode(type)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
+                    onOrganize={organizeCanvas}
                     onUpload={() => handleUploadRequest()}
                     onDelete={() => deleteNodes(new Set(selectedNodeIds))}
                     onClear={() => setClearConfirmOpen(true)}
-                    onCanvasToolChange={setCanvasTool}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
                 />
@@ -3801,7 +3824,9 @@ function InfiniteCanvasPage() {
 
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
 
-                {lightingNode?.metadata?.content ? <CanvasNodeLightingDialog dataUrl={lightingNode.metadata.content} open={Boolean(lightingNode)} onClose={() => setLightingNodeId(null)} onConfirm={(params) => void generateLightingNode(lightingNode!, params)} /> : null}
+                {lightingNode?.metadata?.content ? (
+                    <CanvasNodeLightingDialog dataUrl={lightingNode.metadata.content} open={Boolean(lightingNode)} onClose={() => setLightingNodeId(null)} onConfirm={(params) => void generateLightingNode(lightingNode!, params)} />
+                ) : null}
 
                 <Modal
                     title={t("canvas.projectPage.imageDetails")}

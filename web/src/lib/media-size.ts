@@ -108,8 +108,14 @@ export function parseVideoResolution(value: string | undefined) {
     const raw = String(value || "").trim().toLowerCase();
     if (raw === "low") return "480";
     if (raw === "auto" || raw === "high" || raw === "medium") return "720";
+    if (raw === "2k") return "2k";
     const number = raw.replace(/p$/i, "");
     return /^\d+$/.test(number) && Number(number) > 0 ? number : "720";
+}
+
+export function videoResolutionApiValue(value: string | undefined) {
+    const resolution = parseVideoResolution(value);
+    return resolution === "2k" ? "2K" : `${resolution}p`;
 }
 
 export function inferVideoRatio(size: string) {
@@ -132,7 +138,8 @@ export function computeVideoSize(resolution: string, ratio: string) {
     if (ratio === "auto" || !ratio) return "auto";
     const parsed = parseAspectRatio(ratio);
     if (!parsed) return "auto";
-    const p = Math.max(1, Math.floor(Number(parseVideoResolution(resolution)) || 720));
+    const parsedResolution = parseVideoResolution(resolution);
+    const p = parsedResolution === "2k" ? 1440 : Math.max(1, Math.floor(Number(parsedResolution) || 720));
     const landscape = parsed.width >= parsed.height;
     const width = evenRound(landscape ? (p * parsed.width) / parsed.height : p);
     const height = evenRound(landscape ? p : (p * parsed.height) / parsed.width);
