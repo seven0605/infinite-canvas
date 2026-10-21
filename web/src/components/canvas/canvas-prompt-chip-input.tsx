@@ -186,8 +186,16 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                         onSubmit();
                         return;
                     }
+                    if (event.key === "Enter" && !onSubmit) {
+                        event.preventDefault();
+                        insertLineBreakAtCaret();
+                        syncFromEditor();
+                        return;
+                    }
                     requestAnimationFrame(syncMention);
                 }}
+                onPointerUp={() => requestAnimationFrame(syncMention)}
+                onFocus={() => requestAnimationFrame(syncMention)}
                 onBlur={() => window.setTimeout(closeMention, 120)}
             />
             {mention && candidates.length ? (
@@ -397,6 +405,21 @@ function placeCaretAtEnd(element: HTMLElement) {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+}
+
+function insertLineBreakAtCaret() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const lineBreak = document.createElement("br");
+    const caretNode = document.createTextNode("\uFEFF");
+    range.insertNode(caretNode);
+    range.insertNode(lineBreak);
+    range.setStart(caretNode, 1);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
 }
 
 // Split value into text fragments and matching active labels, which are already sorted by descending length.

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
-import { Button, Image } from "antd";
-import { FileText, Group, Image as ImageIcon, Music2, Video, X } from "lucide-react";
+import { Button, Image, Modal, Tooltip } from "antd";
+import { FileText, Group, Image as ImageIcon, Maximize2, Music2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -37,11 +37,14 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const editorRef = useRef<HTMLDivElement>(null);
+    const placeholderRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
+    const draftRef = useRef(value);
+    const onChangeRef = useRef(onChange);
     const [mention, setMention] = useState<MentionState | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
     const [imagePreview, setImagePreview] = useState<string | null>(null);
-    const tokens = useMemo(() => parseComposerTokens(value), [value]);
+    const [expanded, setExpanded] = useState(false);
     const referenceById = useMemo(() => new Map(inputs.map((input) => [input.nodeId, input])), [inputs]);
     const candidates = useMemo(() => {
         if (!mention) return [];
@@ -51,11 +54,14 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
     }, [inputs, mention]);
 
     useEffect(() => {
-        if (document.activeElement === editorRef.current) return;
-        const editor = editorRef.current;
-        if (!editor) return;
+        onChangeRef.current = onChange;
+    }, [onChange]);
+
+    useEffect(() => () => onChangeRef.current(draftRef.current), []);
+
+    const renderEditorValue = useCallback((editor: HTMLDivElement, nextValue: string) => {
         editor.textContent = "";
-        tokens.forEach((token) => {
+        parseComposerTokens(nextValue).forEach((token) => {
             if (token.type === "text") {
                 editor.append(document.createTextNode(token.value));
                 return;
@@ -63,13 +69,33 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
             const input = referenceById.get(token.nodeId);
             if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreview));
         });
-    }, [inputs, referenceById, theme, tokens]);
+        draftRef.current = nextValue;
+        if (placeholderRef.current) placeholderRef.current.hidden = Boolean(nextValue.trim());
+    }, [inputs, referenceById, theme]);
 
-    const syncFromEditor = () => {
+    const attachEditor = useCallback((editor: HTMLDivElement | null) => {
+        editorRef.current = editor;
+        if (editor) renderEditorValue(editor, draftRef.current);
+    }, [expanded, renderEditorValue]);
+
+    useEffect(() => {
         const editor = editorRef.current;
+        if (!editor || document.activeElement === editor) return;
+        renderEditorValue(editor, value);
+    }, [renderEditorValue, value]);
+
+    const commitDraft = () => {
+        const editor = editorRef.current;
+        if (editor) draftRef.current = serializeEditor(editor);
+        if (draftRef.current !== value) onChangeRef.current(draftRef.current);
+    };
+
+    const syncFromEditor = (sourceEditor?: HTMLDivElement) => {
+        const editor = sourceEditor || editorRef.current;
         if (!editor) return;
         const next = serializeEditor(editor);
-        onChange(next);
+        draftRef.current = next;
+        if (placeholderRef.current) placeholderRef.current.hidden = Boolean(next.trim());
         syncMention();
     };
 
@@ -109,14 +135,89 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
             placeCaretAtEnd(editor);
         }
         closeMention();
-        onChange(serializeEditor(editor));
+        const next = serializeEditor(editor);
+        draftRef.current = next;
+        if (placeholderRef.current) placeholderRef.current.hidden = Boolean(next.trim());
     };
 
     const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => event.stopPropagation();
 
+    const editor = (
+        <div className="relative rounded-xl">
+            <div ref={placeholderRef} hidden={Boolean(draftRef.current.trim())} className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}</div>
+            <div
+                ref={attachEditor}
+                contentEditable
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
+                className={`thin-scrollbar w-full overflow-y-auto overscroll-contain whitespace-pre-wrap break-words px-3 py-2 text-sm leading-7 outline-none ${expanded ? "h-[68dvh] min-h-96 rounded-xl border p-4 text-[15px] leading-6" : "min-h-28 max-h-72"}`}
+                style={{ color: theme.node.text, borderColor: expanded ? theme.toolbar.border : "transparent" }}
+                onInput={(event) => {
+                    if (!composingRef.current) syncFromEditor(event.currentTarget);
+                }}
+                onCompositionStart={() => {
+                    composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                    composingRef.current = false;
+                    syncFromEditor(event.currentTarget);
+                }}
+                onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                    event.stopPropagation();
+                    if (mention && candidates.length) {
+                        if (event.key === "ArrowDown") {
+                            event.preventDefault();
+                            setActiveIndex((index) => (index + 1) % candidates.length);
+                            return;
+                        }
+                        if (event.key === "ArrowUp") {
+                            event.preventDefault();
+                            setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
+                            return;
+                        }
+                        if (event.key === "Enter") {
+                            event.preventDefault();
+                            insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
+                            return;
+                        }
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            closeMention();
+                            return;
+                        }
+                    }
+                    if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentReference(event.key)) {
+                        event.preventDefault();
+                        requestAnimationFrame(() => syncFromEditor());
+                        return;
+                    }
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        insertLineBreakAtCaret();
+                        syncFromEditor();
+                        return;
+                    }
+                    requestAnimationFrame(syncMention);
+                }}
+                onPointerUp={() => requestAnimationFrame(syncMention)}
+                onFocus={() => requestAnimationFrame(syncMention)}
+                onBlur={() => window.setTimeout(() => {
+                    closeMention();
+                    const activeElement = document.activeElement;
+                    if (activeElement instanceof Element && activeElement.closest("[data-canvas-config-composer='true']")) return;
+                    commitDraft();
+                }, 120)}
+            />
+            {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+        </div>
+    );
+
     return (
+        <>
         <div
             data-canvas-no-zoom
+            data-canvas-config-composer="true"
             className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={stopCanvasInteraction}
@@ -128,64 +229,37 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                     <div className="shrink-0 text-xs font-semibold">{t("canvas.composer.title")}</div>
                     <div className="truncate text-[11px] opacity-55">{t("canvas.composer.description")}</div>
                 </div>
-                <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
+                <div className="flex shrink-0 items-center gap-1">
+                    <Tooltip title={t("canvas.promptPanel.expandEditor")}>
+                        <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<Maximize2 className="size-3.5" />} onClick={() => { commitDraft(); setExpanded(true); }} aria-label={t("canvas.promptPanel.expandEditor")} />
+                    </Tooltip>
+                    <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={() => { commitDraft(); onClose(); }} />
+                </div>
             </div>
             <CanvasNodeReferenceBar nodeId={nodeId} nodes={nodes} connectedNodes={connectedNodes} onDisconnect={onDisconnectReference} onStartSelection={onStartReferenceSelection} />
-            <div className="relative rounded-xl">
-                {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}</div> : null}
-                <div
-                    ref={editorRef}
-                    contentEditable
-                    suppressContentEditableWarning
-                    className="thin-scrollbar min-h-28 max-h-72 w-full overflow-y-auto overscroll-contain whitespace-pre-wrap break-words px-3 py-2 text-sm leading-7 outline-none"
-                    style={{ color: theme.node.text }}
-                    onInput={() => {
-                        if (!composingRef.current) syncFromEditor();
-                    }}
-                    onCompositionStart={() => {
-                        composingRef.current = true;
-                    }}
-                    onCompositionEnd={() => {
-                        composingRef.current = false;
-                        syncFromEditor();
-                    }}
-                    onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
-                        event.stopPropagation();
-                        if (mention && candidates.length) {
-                            if (event.key === "ArrowDown") {
-                                event.preventDefault();
-                                setActiveIndex((index) => (index + 1) % candidates.length);
-                                return;
-                            }
-                            if (event.key === "ArrowUp") {
-                                event.preventDefault();
-                                setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
-                                return;
-                            }
-                            if (event.key === "Enter") {
-                                event.preventDefault();
-                                insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
-                                return;
-                            }
-                            if (event.key === "Escape") {
-                                event.preventDefault();
-                                closeMention();
-                                return;
-                            }
-                        }
-                        if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentReference(event.key)) {
-                            event.preventDefault();
-                            requestAnimationFrame(syncFromEditor);
-                            return;
-                        }
-                        requestAnimationFrame(syncMention);
-                    }}
-                    onBlur={() => window.setTimeout(closeMention, 120)}
-                />
-                {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
-            </div>
+            {!expanded ? editor : null}
             {imagePreview ? <Image src={imagePreview} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>
+        <Modal
+            title={t("canvas.promptPanel.editorTitle")}
+            open={expanded}
+            centered
+            width={1120}
+            footer={null}
+            onCancel={(event) => {
+                event.stopPropagation();
+                commitDraft();
+                setExpanded(false);
+            }}
+            modalRender={(modal) => <div data-canvas-no-zoom data-canvas-config-composer="true" onMouseDown={stopCanvasInteraction} onPointerDown={stopCanvasInteraction}>{modal}</div>}
+            destroyOnHidden
+        >
+            <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
+                <CanvasNodeReferenceBar nodeId={nodeId} nodes={nodes} connectedNodes={connectedNodes} onDisconnect={onDisconnectReference} onStartSelection={(targetNodeId) => { setExpanded(false); onStartReferenceSelection?.(targetNodeId); }} />
+                {expanded ? editor : null}
+            </div>
+        </Modal>
+        </>
     );
 
 }
@@ -354,6 +428,21 @@ function placeCaretAtEnd(element: HTMLElement) {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+}
+
+function insertLineBreakAtCaret() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const lineBreak = document.createElement("br");
+    const caretNode = document.createTextNode("\uFEFF");
+    range.insertNode(caretNode);
+    range.insertNode(lineBreak);
+    range.setStart(caretNode, 1);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
 }
 
 function parseComposerTokens(value: string): Token[] {
