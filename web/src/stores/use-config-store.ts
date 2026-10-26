@@ -495,6 +495,15 @@ export function buildApiUrl(baseUrl: string, path: string) {
     return withLocalProxy(`${apiBaseUrl}${path}`);
 }
 
+export function isShuikuleBaseUrl(baseUrl: string) {
+    try {
+        const hostname = new URL(baseUrl).hostname.toLowerCase();
+        return hostname === "shuikule.top" || hostname.endsWith(".shuikule.top");
+    } catch {
+        return false;
+    }
+}
+
 export function normalizeLocalProxyUrl(value: string) {
     const trimmed = value.trim().replace(/\/+$/, "");
     if (!trimmed) return "";

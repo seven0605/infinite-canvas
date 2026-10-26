@@ -58,8 +58,8 @@ export function CanvasSelectionToolbar({
             </svg>
             {showActions ? (
                 <div
-                    className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                    style={{ left: left + width / 2, top: top - 8 }}
+                    className="canvas-floating-dock absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[16px] border text-[15px] backdrop-blur-xl"
+                    style={{ left: left + width / 2, top: top - 8, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item }}
                     onMouseDown={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                 >
@@ -72,10 +72,11 @@ export function CanvasSelectionToolbar({
 }
 
 function SelectionAction({ title, label, icon, onClick }: { title: string; label: string; icon: ReactNode; onClick: () => void }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
-        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color={theme.node.panel} styles={{ root: { color: theme.node.text, boxShadow: "0 8px 24px rgba(0,0,0,.24)", fontSize: 13, fontWeight: 500 } }}>
             <button type="button" className="group relative flex h-12 items-center whitespace-nowrap px-1.5" onClick={onClick} aria-label={title}>
-                <span className="flex h-9 items-center gap-2 rounded-lg px-2.5 transition group-hover:bg-[#f0f0f1]">
+                <span className="flex h-9 items-center gap-2 rounded-lg px-2.5 transition" style={{ color: theme.toolbar.item }}>
                     {icon}
                     <span>{label}</span>
                 </span>

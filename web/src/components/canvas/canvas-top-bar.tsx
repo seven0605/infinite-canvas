@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasZoomModifierLabel } from "@/lib/canvas/platform-shortcuts";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DOCS_URL } from "@/constant/env";
@@ -57,6 +58,7 @@ export function CanvasTopBar({
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
     const theme = canvasThemes[colorTheme];
+    const zoomModifier = canvasZoomModifierLabel();
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
@@ -73,7 +75,7 @@ export function CanvasTopBar({
 
     return (
         <>
-            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between pl-1 pr-4">
+            <div className="canvas-top-bar pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between pl-1 pr-4">
                 <div className="pointer-events-auto flex min-w-0 items-center gap-2">
                     <Tooltip title={sidePanelOpen ? t("canvas.collapsePanel") : t("canvas.expandPanel")}>
                         <button
@@ -121,13 +123,13 @@ export function CanvasTopBar({
                                     if (event.key === "Enter") onFinishTitleEditing();
                                     if (event.key === "Escape") onCancelTitleEditing();
                                 }}
-                                className="max-w-[280px] bg-transparent p-0 text-left text-lg font-semibold tracking-normal outline-none"
+                                className="max-w-[280px] bg-transparent p-0 text-left text-[15px] font-semibold tracking-[-0.01em] outline-none"
                                 style={{ color: theme.node.text }}
                             />
                         ) : (
                             <button
                                 type="button"
-                                className="max-w-[280px] truncate border-b border-dashed border-transparent text-left text-lg font-semibold tracking-normal transition hover:border-current"
+                                className="max-w-[280px] truncate border-b border-dashed border-transparent text-left text-[15px] font-semibold tracking-[-0.01em] transition hover:border-current"
                                 onDoubleClick={onStartTitleEditing}
                                 title={t("canvas.renameHint")}
                             >
@@ -143,8 +145,8 @@ export function CanvasTopBar({
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
                     <Button
                         type="text"
-                        className="!h-10 !rounded-xl !px-3 !font-medium"
-                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
+                        className="canvas-agent-button !h-9 !rounded-xl !px-3 !font-medium"
+                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
                         icon={<Bot className="size-4" />}
                         onClick={onToggleAgent}
                     >
@@ -155,7 +157,7 @@ export function CanvasTopBar({
             <Modal title={t("canvas.shortcuts")} open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
                 <div className="space-y-2 border-t pt-4 text-sm" style={{ borderColor: theme.node.stroke }}>
                     <Shortcut keys={["Space", t("canvas.shortcut.drag")]} value={t("canvas.shortcut.dragCanvas")} />
-                    <Shortcut keys={["Space", t("canvas.shortcut.wheel")]} value={t("canvas.shortcut.zoom")} />
+                    <Shortcut keys={[zoomModifier, t("canvas.shortcut.wheel")]} value={t("canvas.shortcut.zoom")} />
                     <Shortcut keys={[t("canvas.shortcut.wheel")]} value={t("canvas.shortcut.pan")} />
                     <Shortcut keys={[t("canvas.shortcut.zoomSlider")]} value={t("canvas.shortcut.preciseZoom")} />
                     <Shortcut keys={[t("canvas.shortcut.drag")]} value={t("canvas.shortcut.boxSelect")} />

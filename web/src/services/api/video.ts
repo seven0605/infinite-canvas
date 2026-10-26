@@ -6,7 +6,7 @@ import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, videoResolutionApiValue } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, buildApiUrl, isShuikuleBaseUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { buildMiniMaxH3Content, isMiniMaxH3Request, miniMaxH3ApiBaseUrl, miniMaxH3Resolution, normalizeMiniMaxH3DataUrl } from "./minimax-h3";
 import { prepareMiniMaxH3VideoReferences } from "./minimax-h3-media";
 import { runModelPlugin } from "./model-plugin";
@@ -18,7 +18,8 @@ type VideoResponse = {
     task_id?: string;
     video_id?: string;
     status?: string;
-    error?: { message?: string };
+    error?: { message?: string } | string;
+    fail_reason?: string;
     url?: string;
     result_url?: string;
     video_url?: string;
@@ -111,6 +112,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     if (isMiniMaxH3Request(requestConfig.baseUrl, modelOptionName(selectedModel))) return createMiniMaxH3VideoTask(requestConfig, selectedModel, prompt, references, options);
     if (isAgnesApi(requestConfig)) return createAgnesVideoTask(requestConfig, selectedModel, prompt, references, options);
     if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
+    if (isShuikuleBaseUrl(requestConfig.baseUrl)) return createShuikuleVideoTask(requestConfig, selectedModel, prompt, references, options);
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
 
@@ -214,6 +216,45 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     }
 }
 
+async function createShuikuleVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const referenceImageUrls = references.map((image) => publicReferenceUrl(image.url || image.dataUrl));
+    const referenceVideoUrls = (options?.videos || []).map((video) => publicReferenceUrl(video.url));
+    const referenceAudioUrls = (options?.audios || []).map((audio) => publicReferenceUrl(audio.url));
+    const refs = {
+        ...(referenceImageUrls.length ? { reference_image_urls: referenceImageUrls } : {}),
+        ...(referenceVideoUrls.length ? { reference_video_urls: referenceVideoUrls } : {}),
+        ...(referenceAudioUrls.length ? { reference_audio_urls: referenceAudioUrls } : {}),
+    };
+    const body = {
+        model: modelOptionName(model),
+        prompt,
+        seconds: Number(normalizeVideoSeconds(config.videoSeconds)),
+        size: normalizeVideoSize(config.size, config.vquality) || "1280x720",
+        metadata: {
+            __workbench_passthrough: {
+                aspect_ratio: videoAspectRatio(config.size),
+                resolution: normalizeVideoResolution(config.vquality),
+            },
+            ...(Object.keys(refs).length ? { __workbench_refs: refs } : {}),
+        },
+    };
+    try {
+        const created = unwrapVideoResponse(
+            (
+                await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, {
+                    headers: aiHeaders(config, "application/json"),
+                    signal: options?.signal,
+                })
+            ).data,
+        );
+        const id = created.id || created.task_id;
+        if (!id) throw new Error(apiText("noVideoTaskId"));
+        return { id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
 async function createAgnesVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
     const modelName = modelOptionName(model);
     const images = await Promise.all(references.slice(0, 7).map(agnesVideoReference));
@@ -248,7 +289,7 @@ async function pollAgnesVideoTask(config: AiConfig, task: VideoGenerationTask, o
         );
         const url = videoResultUrl(video);
         if (video.status === "completed" && url) return { status: "completed", result: await videoResultFromUrl(url, options) };
-        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
+        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error) || readApiErrorMessage(video.fail_reason) || apiText("videoGenerationFailed") };
         return { status: "pending" };
     } catch (error) {
         const retryAfterMs = agnesPollRetryDelay(error);
@@ -264,10 +305,10 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
         if (video.status === "completed") {
             const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
-            await assertVideoBlob(content.data);
+            await assertVideoBlob(content.data, isShuikuleBaseUrl(config.baseUrl));
             return { status: "completed", result: { blob: content.data } };
         }
-        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
+        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error) || readApiErrorMessage(video.fail_reason) || apiText("videoGenerationFailed") };
         return { status: "pending" };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
@@ -487,6 +528,11 @@ function isAgnesApi(config: Pick<AiConfig, "baseUrl">) {
     }
 }
 
+function publicReferenceUrl(value: string | undefined) {
+    if (/^https:\/\//i.test(value || "")) return value as string;
+    throw new Error(apiText("shuikulePublicReferenceRequired"));
+}
+
 function isAgnesVideo25(model: string) {
     return /^agnes-video-2\.5(?:-|$)/i.test(model.trim());
 }
@@ -619,13 +665,17 @@ function statusMessage(status: number | undefined, fallback: string) {
     return status ? `${fallback}（${status}）` : fallback;
 }
 
-async function assertVideoBlob(blob: Blob) {
-    if (!blob.type.includes("json")) return;
+async function assertVideoBlob(blob: Blob, requireMp4 = false) {
+    if (!blob.size) throw new Error(apiText("videoDownloadFailed"));
+    if (!blob.type.includes("json") && !blob.type.includes("text") && !blob.type.includes("html")) {
+        if (requireMp4 && !blob.type.includes("video/mp4")) throw new Error(apiText("invalidVideoContentType", { type: blob.type || "unknown" }));
+        return;
+    }
     let payload: { code?: number; msg?: string; error?: { message?: string } };
     try {
         payload = JSON.parse(await blob.text()) as { code?: number; msg?: string; error?: { message?: string } };
     } catch {
-        return;
+        throw new Error(apiText("invalidVideoContentType", { type: blob.type || "unknown" }));
     }
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(readApiErrorMessage(payload) || apiText("videoDownloadFailed"));
     if (payload.error?.message) throw new Error(readApiErrorMessage(payload.error.message) || payload.error.message);

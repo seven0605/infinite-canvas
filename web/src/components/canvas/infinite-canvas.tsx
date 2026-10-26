@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { isCanvasZoomWheel } from "@/lib/canvas/platform-shortcuts";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
 
@@ -93,7 +94,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
 
         const current = nextViewportRef.current || viewportRef.current;
         let next: ViewportTransform;
-        if (spacePressedRef.current) {
+        if (isCanvasZoomWheel(event)) {
             const factor = Math.pow(1.1, -event.deltaY / 100);
             const newScale = Math.min(Math.max(current.k * factor, 0.05), 5);
             const rect = containerRef.current?.getBoundingClientRect();
